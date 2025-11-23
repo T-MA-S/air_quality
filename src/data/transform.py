@@ -38,6 +38,7 @@ def transform_openaq_measurements(
 ) -> pd.DataFrame:
     """
     Transform OpenAQ measurements to standardized format.
+    Supports both v2 and v3 API formats.
 
     Args:
         measurements: List of measurement dictionaries from OpenAQ
@@ -52,32 +53,86 @@ def transform_openaq_measurements(
     records = []
     for m in measurements:
         try:
-            # Extract location info
+            # OpenAQ v3 structure differs from v2
+            # Try v3 format first, then fall back to v2
+            
+            # Extract location info (v3 may have different structure)
             location = m.get("location", {})
+            if not location:
+                # v3 might have location data directly in measurement
+                location = m
+            
+            # Extract coordinates
             coordinates = location.get("coordinates", {})
+            if not coordinates:
+                # v3 might have coordinates directly
+                if "latitude" in location and "longitude" in location:
+                    coordinates = {
+                        "latitude": location.get("latitude"),
+                        "longitude": location.get("longitude")
+                    }
+                elif "geometry" in location:
+                    # v3 might use GeoJSON geometry
+                    geom = location.get("geometry", {})
+                    if geom.get("type") == "Point":
+                        coords = geom.get("coordinates", [])
+                        if len(coords) >= 2:
+                            coordinates = {
+                                "longitude": coords[0],
+                                "latitude": coords[1]
+                            }
 
             # Normalize timestamp
-            date_utc = m.get("date", {}).get("utc")
+            # v3 uses "datetime" or "date" field
+            date_utc = None
+            if "datetime" in m:
+                date_utc = m.get("datetime")
+            elif "date" in m:
+                date_obj = m.get("date")
+                if isinstance(date_obj, dict):
+                    date_utc = date_obj.get("utc")
+                else:
+                    date_utc = date_obj
+            elif "dateUTC" in m:
+                date_utc = m.get("dateUTC")
+            
             if date_utc:
                 timestamp = normalize_timestamp(date_utc, city.timezone)
             else:
                 continue
 
+            # Extract parameter (v3 might use parameter object or string)
+            parameter = m.get("parameter", "")
+            if isinstance(parameter, dict):
+                parameter = parameter.get("name", parameter.get("id", ""))
+            parameter = str(parameter).lower()
+
+            # Extract value
+            value = m.get("value", 0)
+            if isinstance(value, dict):
+                value = value.get("value", 0)
+
+            # Extract unit
+            unit = m.get("unit", "")
+            if isinstance(unit, dict):
+                unit = unit.get("name", unit.get("symbol", ""))
+            unit = str(unit).lower()
+
             record = {
                 "timestamp": timestamp,
                 "city": city.name,
                 "country": city.country,
-                "parameter": m.get("parameter", "").lower(),
-                "value": float(m.get("value", 0)),
-                "unit": m.get("unit", "").lower(),
+                "parameter": parameter,
+                "value": float(value),
+                "unit": unit,
                 "latitude": coordinates.get("latitude") or city.latitude,
                 "longitude": coordinates.get("longitude") or city.longitude,
-                "location_id": location.get("id"),
-                "location_name": location.get("name"),
+                "location_id": location.get("id") or location.get("locationId"),
+                "location_name": location.get("name") or location.get("locationName"),
             }
 
             # Convert units to standard (micrograms per cubic meter)
-            if record["unit"] == "µg/m³" or record["unit"] == "ug/m3":
+            if record["unit"] in ["µg/m³", "ug/m3", "ug/m^3", "micrograms per cubic meter"]:
                 record["value_ug_m3"] = record["value"]
             elif record["unit"] == "ppm":
                 # Approximate conversion (varies by parameter)

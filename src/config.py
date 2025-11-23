@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     # OpenAQ API
     openaq_api_base_url: str = Field(
-        default="https://api.openaq.org/v2", env="OPENAQ_API_BASE_URL"
+        default="https://api.openaq.org/v3", env="OPENAQ_API_BASE_URL"
     )
     openaq_api_key: Optional[str] = Field(default=None, env="OPENAQ_API_KEY")
     openaq_rate_limit: int = Field(default=100, env="OPENAQ_RATE_LIMIT")

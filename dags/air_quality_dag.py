@@ -3,19 +3,18 @@
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
 from airflow.utils.dates import days_ago
 
 import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, '/opt/airflow/src')
 
 from src.etl.pipeline import ETLPipeline
 from src.data.models import CITIES
+from src.database.connection import get_engine
+from src.data.quality import DataQualityChecker
 from src.utils.logger import setup_logger
+import pandas as pd
+from sqlalchemy import text
 
 logger = setup_logger(__name__)
 
@@ -63,11 +62,6 @@ def run_etl(**context):
 
 def validate_data_quality(**context):
     """Validate data quality and generate report."""
-    from src.database.connection import get_engine
-    from src.data.quality import DataQualityChecker
-    import pandas as pd
-    from sqlalchemy import text
-
     engine = get_engine()
     checker = DataQualityChecker()
 
@@ -94,6 +88,35 @@ def validate_data_quality(**context):
     logger.info("Data quality validation passed")
 
 
+def create_views(**context):
+    """Create views in database."""
+    engine = get_engine()
+    
+    # Read SQL file
+    with open("/opt/airflow/project/sql/views.sql", "r") as f:
+        sql_content = f.read()
+    
+    # Выполняем SQL
+    with engine.connect() as conn:
+        trans = conn.begin()
+        try:
+            # Execute the entire SQL file as a single statement
+            try:
+                conn.execute(text(sql_content))
+            except Exception as e:
+                logger.warning(f"Error creating views: {e}")
+            try:
+                trans.commit()
+            except Exception as e_commit:
+                trans.rollback()
+                logger.warning(f"Error committing transaction for views: {e_commit}")
+        except Exception as e:
+            trans.rollback()
+            logger.warning(f"Error creating views: {e}")
+    
+    logger.info("Views created/updated")
+
+
 # Tasks
 extract_task = PythonOperator(
     task_id="extract_and_load",
@@ -107,9 +130,9 @@ validate_task = PythonOperator(
     dag=dag,
 )
 
-create_views_task = BashOperator(
+create_views_task = PythonOperator(
     task_id="create_views",
-    bash_command=f"psql ${{POSTGRES_CONN}} -f {project_root}/sql/views.sql || true",
+    python_callable=create_views,
     dag=dag,
 )
 

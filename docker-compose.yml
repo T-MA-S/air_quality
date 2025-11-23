@@ -13,14 +13,18 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U air_quality_user"]
+      test: ["CMD-SHELL", "pg_isready -U air_quality_user -d air_quality"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   airflow-webserver:
     image: apache/airflow:2.8.1
-    command: webserver
+    command: >
+      bash -c "
+      python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt &&
+      airflow webserver
+      "
     ports:
       - "8080:8080"
     environment:
@@ -28,27 +32,61 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PYTHONPATH=/opt/airflow
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=air_quality
+      - POSTGRES_USER=air_quality_user
+      - POSTGRES_PASSWORD=air_quality_password
+      - OPENAQ_API_KEY=3c5a57e648b1d0fc895d2c0f4ecebc7729b133997e9725ce72d01b4c7e528623
+      - OPENAQ_API_BASE_URL=https://api.openaq.org/v3
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
       - ./airflow_home:/opt/airflow
+      - .:/opt/airflow/project
+      - ./cache:/opt/airflow/cache
     depends_on:
-      - airflow-postgres
-      - postgres
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   airflow-scheduler:
     image: apache/airflow:2.8.1
-    command: scheduler
+    command: >
+      bash -c "
+      python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt &&
+      airflow scheduler
+      "
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PYTHONPATH=/opt/airflow
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=air_quality
+      - POSTGRES_USER=air_quality_user
+      - POSTGRES_PASSWORD=air_quality_password
+      - OPENAQ_API_KEY=3c5a57e648b1d0fc895d2c0f4ecebc7729b133997e9725ce72d01b4c7e528623
+      - OPENAQ_API_BASE_URL=https://api.openaq.org/v3
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
       - ./airflow_home:/opt/airflow
+      - .:/opt/airflow/project
+      - ./cache:/opt/airflow/cache
     depends_on:
-      - airflow-postgres
-      - postgres
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   airflow-postgres:
     image: postgres:15
@@ -58,6 +96,48 @@ services:
       POSTGRES_DB: airflow
     volumes:
       - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-init:
+    image: apache/airflow:2.8.1
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PYTHONPATH=/opt/airflow
+    volumes:
+      - ./src:/opt/airflow/src
+    command: >
+      bash -c "
+      airflow db init &&
+      airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin
+      "
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  db-init:
+    build: .
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=air_quality
+      - POSTGRES_USER=air_quality_user
+      - POSTGRES_PASSWORD=air_quality_password
+      - OPENAQ_API_KEY=3c5a57e648b1d0fc895d2c0f4ecebc7729b133997e9725ce72d01b4c7e528623
+      - OPENAQ_API_BASE_URL=https://api.openaq.org/v3
+    volumes:
+      - .:/app
+    command: python -c "from src.database.schema import create_schema; create_schema()"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   app:
     build: .
@@ -67,11 +147,38 @@ services:
       - POSTGRES_DB=air_quality
       - POSTGRES_USER=air_quality_user
       - POSTGRES_PASSWORD=air_quality_password
+      - OPENAQ_API_KEY=3c5a57e648b1d0fc895d2c0f4ecebc7729b133997e9725ce72d01b4c7e528623
+      - OPENAQ_API_BASE_URL=https://api.openaq.org/v3
     volumes:
       - .:/app
       - ./cache:/app/cache
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    command: tail -f /dev/null  # Do not run ETL automatically
+
+  dashboard:
+    build: .
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=air_quality
+      - POSTGRES_USER=air_quality_user
+      - POSTGRES_PASSWORD=air_quality_password
+      - OPENAQ_API_KEY=3c5a57e648b1d0fc895d2c0f4ecebc7729b133997e9725ce72d01b4c7e528623
+      - OPENAQ_API_BASE_URL=https://api.openaq.org/v3
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+    command: streamlit run src/dashboard/dashboard.py --server.port=8501 --server.address=0.0.0.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
