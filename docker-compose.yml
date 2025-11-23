@@ -157,7 +157,7 @@ services:
         condition: service_healthy
       db-init:
         condition: service_completed_successfully
-    command: tail -f /dev/null  # Не запускать ETL автоматически
+    command: tail -f /dev/null  # Do not run ETL automatically
 
   dashboard:
     build: .
