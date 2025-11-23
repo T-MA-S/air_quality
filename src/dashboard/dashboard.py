@@ -48,8 +48,15 @@ def main():
     metrics_df = load_data("SELECT metric_code, metric_name FROM dim_metric ORDER BY metric_code")
     metrics = metrics_df["metric_code"].tolist() if not metrics_df.empty else ["pm25", "pm10"]
 
+    # Filter default values to only include those that exist in metrics list
+    default_metrics = ["pm25", "pm10"]
+    valid_defaults = [m for m in default_metrics if m in metrics]
+    # If no valid defaults, use first available metrics (or empty list)
+    if not valid_defaults and metrics:
+        valid_defaults = metrics[:2] if len(metrics) >= 2 else metrics
+
     selected_metrics = st.sidebar.multiselect(
-        "Select Metrics", metrics, default=["pm25", "pm10"]
+        "Select Metrics", metrics, default=valid_defaults
     )
 
     date_range = st.sidebar.date_input(

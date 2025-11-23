@@ -1,6 +1,6 @@
 """Data quality checks and validation."""
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from src.config import settings
