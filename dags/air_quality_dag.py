@@ -30,19 +30,19 @@ dag = DAG(
 # Tasks
 extract_task = BashOperator(
     task_id="extract_and_load",
-    bash_command="cd /opt/airflow/project && docker-compose exec -T app python -m src.main --days 7",
+    bash_command="docker exec air_quality-app-1 python -m src.main --days 7",
     dag=dag,
 )
 
 validate_task = BashOperator(
     task_id="validate_data_quality",
-    bash_command="docker-compose exec -T app python -c \"from src.database.connection import get_engine; from src.data.quality import DataQualityChecker; import pandas as pd; from sqlalchemy import text; engine = get_engine(); checker = DataQualityChecker(); df = pd.read_sql(text('SELECT * FROM v_air_quality WHERE timestamp >= NOW() - INTERVAL \\'7 days\\''), engine); report = checker.validate_air_quality_data(df); assert report['valid'], f'Validation failed: {report[\\'warnings\\']}'\"",
+    bash_command="docker exec air_quality-app-1 python -c \"from src.database.connection import get_engine; from src.data.quality import DataQualityChecker; import pandas as pd; from sqlalchemy import text; engine = get_engine(); checker = DataQualityChecker(); df = pd.read_sql(text('SELECT * FROM v_air_quality WHERE timestamp >= NOW() - INTERVAL \\'7 days\\''), engine); report = checker.validate_air_quality_data(df); assert report['valid'], f'Validation failed: {report[\\'warnings\\']}'\"",
     dag=dag,
 )
 
 create_views_task = BashOperator(
     task_id="create_views",
-    bash_command="docker-compose exec -T postgres psql -U air_quality_user -d air_quality -f /docker-entrypoint-initdb.d/../sql/views.sql || true",
+    bash_command="docker exec -i air_quality-postgres-1 psql -U air_quality_user -d air_quality < /opt/airflow/project/sql/views.sql || true",
     dag=dag,
 )
 
