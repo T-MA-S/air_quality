@@ -105,7 +105,11 @@ def create_views(**context):
                 conn.execute(text(sql_content))
             except Exception as e:
                 logger.warning(f"Error creating views: {e}")
-            trans.commit()
+            try:
+                trans.commit()
+            except Exception as e_commit:
+                trans.rollback()
+                logger.warning(f"Error committing transaction for views: {e_commit}")
         except Exception as e:
             trans.rollback()
             logger.warning(f"Error creating views: {e}")
