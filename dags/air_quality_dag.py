@@ -100,15 +100,11 @@ def create_views(**context):
     with engine.connect() as conn:
         trans = conn.begin()
         try:
-            # Разделяем на отдельные команды
-            for statement in sql_content.split(";"):
-                statement = statement.strip()
-                if statement and not statement.startswith("--"):
-                    try:
-                        conn.execute(text(statement))
-                    except Exception as e:
-                        # Игнорируем ошибки, если представления уже существуют
-                        logger.debug(f"View might already exist: {e}")
+            # Execute the entire SQL file as a single statement
+            try:
+                conn.execute(text(sql_content))
+            except Exception as e:
+                logger.warning(f"Error creating views: {e}")
             trans.commit()
         except Exception as e:
             trans.rollback()
