@@ -66,8 +66,10 @@ class ETLPipeline:
         all_measurements = []
         for param in parameters:
             try:
+                # Use coordinates instead of city name for v3 API
                 measurements = self.openaq_client.get_measurements(
-                    city=city.openaq_city_name or city.name,
+                    latitude=city.latitude,
+                    longitude=city.longitude,
                     parameter=param,
                     date_from=date_from,
                     date_to=date_to,

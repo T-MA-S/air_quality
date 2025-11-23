@@ -80,27 +80,42 @@ class OpenAQClient:
         self,
         city: Optional[str] = None,
         country: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        radius: int = 25000,  # radius in meters (25km default, max allowed in v3)
         limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         """
-        Get locations (stations) for a city or country.
+        Get locations (stations) for a city, country, or coordinates.
 
         Args:
-            city: City name filter
+            city: City name filter (may not work in v3)
             country: Country code filter (ISO 3166-1 alpha-2)
+            latitude: Latitude for coordinate-based search
+            longitude: Longitude for coordinate-based search
+            radius: Search radius in meters (default 25km, max 25km in v3)
             limit: Maximum number of results
 
         Returns:
             List of location dictionaries
         """
         params = {"limit": limit}
-        if city:
-            params["citiesName"] = city  # v3 uses citiesName instead of city
-        if country:
-            params["countriesId"] = country  # v3 may use countriesId
+        
+        # v3 API: use coordinates if provided (more reliable)
+        if latitude is not None and longitude is not None:
+            # v3 uses coordinates parameter: "latitude,longitude" (not lon,lat!)
+            # And radius must be <= 25000 (25km max)
+            params["coordinates"] = f"{latitude},{longitude}"
+            params["radius"] = min(radius, 25000)  # v3 API max radius is 25km
+        elif city:
+            # Try city name (may not work for all cities)
+            params["citiesName"] = city
+        elif country:
+            # Try country code
+            params["countriesId"] = country
 
         response = self._make_request("/locations", params=params)
-        # v3 returns data directly in response, not in "results"
+        # v3 returns data in "results" field
         if "results" in response:
             return response.get("results", [])
         elif "data" in response:
@@ -112,6 +127,8 @@ class OpenAQClient:
         self,
         location_id: Optional[int] = None,
         city: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
         parameter: Optional[str] = None,
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
@@ -120,82 +137,109 @@ class OpenAQClient:
         """
         Get air quality measurements using OpenAQ v3 API.
         
-        Note: OpenAQ v3 API uses different structure. We use /latest endpoint
-        which returns the most recent measurements. For historical data,
-        v3 API may require different endpoints or approach.
+        Strategy: First find locations near the city coordinates,
+        then get latest measurements for those locations.
 
         Args:
             location_id: Specific location ID
             city: City name filter
+            latitude: Latitude for coordinate-based search
+            longitude: Longitude for coordinate-based search
             parameter: Parameter code (e.g., 'pm25', 'pm10', 'no2', 'o3')
-            date_from: Start date (may not be fully supported in v3 latest endpoint)
-            date_to: End date (may not be fully supported in v3 latest endpoint)
+            date_from: Start date (not fully supported - latest endpoint returns recent data only)
+            date_to: End date (not fully supported - latest endpoint returns recent data only)
             limit: Maximum number of results
 
         Returns:
             List of measurement dictionaries
         """
-        params = {"limit": limit}
+        all_measurements = []
         
-        # v3 latest endpoint supports these filters
+        # First, get locations
+        location_ids = []
         if location_id:
-            params["locationsId"] = location_id
-        if city:
-            params["citiesName"] = city
-        if parameter:
-            # v3 uses parametersName for parameter codes
-            params["parametersName"] = parameter
+            location_ids = [location_id]
+        elif latitude is not None and longitude is not None:
+            # Find locations near coordinates
+            locations = self.get_locations(latitude=latitude, longitude=longitude, limit=50)
+            location_ids = [loc.get("id") for loc in locations if loc.get("id")]
+            logger.info(f"Found {len(location_ids)} locations near coordinates ({latitude}, {longitude})")
+        elif city:
+            # Try to find locations by city name
+            locations = self.get_locations(city=city, limit=50)
+            location_ids = [loc.get("id") for loc in locations if loc.get("id")]
+            logger.info(f"Found {len(location_ids)} locations for city {city}")
         
-        # Note: date_from and date_to may not be supported in /latest endpoint
-        # For historical data, v3 might require different approach
+        if not location_ids:
+            logger.warning(f"No locations found for city={city}, lat={latitude}, lon={longitude}")
+            return []
         
-        try:
-            response = self._make_request("/latest", params=params)
-            
-            # v3 returns data in "results" field
-            if "results" in response:
-                measurements = response.get("results", [])
-            elif isinstance(response, list):
-                measurements = response
-            else:
-                measurements = []
-            
-            # Transform to v2-like format for compatibility
-            transformed = []
-            for m in measurements:
-                # v3 structure: location contains measurements
-                location = m.get("location", {})
-                measurements_list = m.get("measurements", [])
+        # For each location, get latest measurements
+        # v3 API: use /locations/{id}/latest endpoint
+        for loc_id in location_ids[:20]:  # Limit to avoid too many requests
+            try:
+                # Get latest measurements for this location
+                endpoint = f"/locations/{loc_id}/latest"
+                response = self._make_request(endpoint, params={})
                 
-                for meas in measurements_list:
-                    # Extract parameter info
-                    param_info = meas.get("parameter", {})
-                    param_name = param_info.get("name", "") if isinstance(param_info, dict) else str(param_info)
+                # v3 returns measurements in "results" field
+                measurements = response.get("results", [])
+                
+                # Also get location info for context
+                location_endpoint = f"/locations/{loc_id}"
+                location_data = self._make_request(location_endpoint, params={})
+                location_info = location_data.get("results", [{}])[0] if location_data.get("results") else {}
+                
+                # Get sensor info to map sensorsId to parameter names
+                sensors = location_info.get("sensors", [])
+                sensor_param_map = {}
+                for sensor in sensors:
+                    sensor_id = sensor.get("id")
+                    param_info = sensor.get("parameter", {})
+                    if sensor_id and isinstance(param_info, dict):
+                        sensor_param_map[sensor_id] = {
+                            "name": param_info.get("name", "").lower(),
+                            "units": param_info.get("units", "")
+                        }
+                
+                # Transform v3 measurements to v2-like format
+                for meas in measurements:
+                    sensor_id = meas.get("sensorsId")
+                    param_info = sensor_param_map.get(sensor_id, {})
+                    param_name = param_info.get("name", "")
+                    
+                    # Filter by parameter if specified
+                    if parameter and param_name != parameter.lower():
+                        continue
+                    
+                    # Extract datetime
+                    dt_info = meas.get("datetime", {})
+                    date_utc = dt_info.get("utc") if isinstance(dt_info, dict) else meas.get("datetime")
                     
                     # Create v2-compatible structure
-                    # Extract unit value with clearer logic
-                    if meas.get("unit"):
-                        unit_value = meas.get("unit")
-                    elif isinstance(param_info, dict):
-                        unit_value = param_info.get("units", "")
-                    else:
-                        unit_value = ""
-
-                    transformed.append({
-                        "location": location,
+                    all_measurements.append({
+                        "location": {
+                            "id": loc_id,
+                            "name": location_info.get("name", ""),
+                            "coordinates": meas.get("coordinates", location_info.get("coordinates", {}))
+                        },
                         "parameter": param_name,
-                        "value": meas.get("value"),
-                        "unit": unit_value,
+                        "value": meas.get("value", 0),
+                        "unit": param_info.get("units", ""),
                         "date": {
-                            "utc": meas.get("date", {}).get("utc") if isinstance(meas.get("date"), dict) else meas.get("date")
+                            "utc": date_utc
                         }
                     })
-            
-            return transformed[:limit]
-            
-        except Exception as e:
-            logger.error(f"Error getting measurements from v3 API: {e}")
-            return []
+                
+                if len(all_measurements) >= limit:
+                    break
+                    
+            except Exception as e:
+                logger.debug(f"Error getting data for location {loc_id}: {e}")
+                continue
+        
+        logger.info(f"Retrieved {len(all_measurements)} measurements")
+        return all_measurements[:limit]
 
     def get_cities(self, country: Optional[str] = None, limit: int = 1000) -> List[str]:
         """
