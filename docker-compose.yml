@@ -20,13 +20,12 @@ services:
 
   airflow-webserver:
     image: apache/airflow:2.8.1
-    user: root
     command: >
       bash -c "
       mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins &&
-      chown -R airflow:root /opt/airflow &&
-      chmod -R 775 /opt/airflow &&
-      su-exec airflow bash -c 'python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt && exec airflow webserver'
+      chmod -R 777 /opt/airflow/logs &&
+      python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt &&
+      airflow webserver
       "
     ports:
       - "38080:8080"
@@ -59,13 +58,12 @@ services:
 
   airflow-scheduler:
     image: apache/airflow:2.8.1
-    user: root
     command: >
       bash -c "
       mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins &&
-      chown -R airflow:root /opt/airflow &&
-      chmod -R 775 /opt/airflow &&
-      su-exec airflow bash -c 'python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt && exec airflow scheduler'
+      chmod -R 777 /opt/airflow/logs &&
+      python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt &&
+      airflow scheduler
       "
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
