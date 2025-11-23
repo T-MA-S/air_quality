@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: air_quality_user
       POSTGRES_PASSWORD: air_quality_password
     ports:
-      - "5432:5432"
+      - "85432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -26,7 +26,7 @@ services:
       airflow webserver
       "
     ports:
-      - "8080:8080"
+      - "88080:8080"
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
@@ -170,7 +170,7 @@ services:
       - OPENAQ_API_KEY=3c5a57e648b1d0fc895d2c0f4ecebc7729b133997e9725ce72d01b4c7e528623
       - OPENAQ_API_BASE_URL=https://api.openaq.org/v3
     ports:
-      - "8501:8501"
+      - "88501:8501"
     volumes:
       - .:/app
     command: streamlit run src/dashboard/dashboard.py --server.port=8501 --server.address=0.0.0.0
