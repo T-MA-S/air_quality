@@ -113,14 +113,13 @@ def _insert_default_metrics(engine):
         {"metric_code": "so2", "metric_name": "Sulfur Dioxide", "unit": "µg/m³", "description": "SO₂ concentration"},
     ]
 
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         for metric in default_metrics:
             try:
                 stmt = insert(dim_metric).values(**metric)
                 conn.execute(stmt)
-                conn.commit()
             except Exception as e:
                 # Metric might already exist
                 logger.debug(f"Metric {metric['metric_code']} might already exist: {e}")
-                conn.rollback()
+                pass  # begin() handles rollback automatically
 

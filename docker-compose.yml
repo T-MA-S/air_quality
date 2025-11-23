@@ -28,12 +28,20 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PYTHONPATH=/opt/airflow
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
       - ./airflow_home:/opt/airflow
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/opt/airflow/project
     depends_on:
-      - airflow-postgres
-      - postgres
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   airflow-scheduler:
     image: apache/airflow:2.8.1
@@ -43,12 +51,20 @@ services:
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PYTHONPATH=/opt/airflow
     volumes:
       - ./dags:/opt/airflow/dags
+      - ./src:/opt/airflow/src
       - ./airflow_home:/opt/airflow
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/opt/airflow/project
     depends_on:
-      - airflow-postgres
-      - postgres
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
 
   airflow-postgres:
     image: postgres:15
@@ -58,6 +74,46 @@ services:
       POSTGRES_DB: airflow
     volumes:
       - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-init:
+    image: apache/airflow:2.8.1
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@airflow-postgres:5432/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - PYTHONPATH=/opt/airflow
+    volumes:
+      - ./src:/opt/airflow/src
+    command: >
+      bash -c "
+      airflow db init &&
+      airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin
+      "
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+    restart: "no"
+
+  db-init:
+    build: .
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=air_quality
+      - POSTGRES_USER=air_quality_user
+      - POSTGRES_PASSWORD=air_quality_password
+    volumes:
+      - .:/app
+    command: python -c "from src.database.schema import create_schema; create_schema()"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   app:
     build: .
@@ -71,7 +127,11 @@ services:
       - .:/app
       - ./cache:/app/cache
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    command: tail -f /dev/null  # Не запускать ETL автоматически
 
 volumes:
   postgres_data:

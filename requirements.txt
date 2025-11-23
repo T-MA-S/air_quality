@@ -2,7 +2,7 @@
 pandas==2.1.4
 numpy==1.26.2
 requests==2.31.0
-sqlalchemy==2.0.23
+sqlalchemy>=1.4.28,<2.0  # Airflow requires < 2.0
 psycopg2-binary==2.9.9
 
 # API clients
@@ -18,7 +18,7 @@ pydantic-settings==2.1.0
 alembic==1.13.1
 
 # Dashboard
-streamlit==1.29.0
+streamlit>=1.32.0  # Updated to support protobuf>=5
 plotly==5.18.0
 
 # Orchestration
