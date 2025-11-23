@@ -173,11 +173,19 @@ class OpenAQClient:
                     param_name = param_info.get("name", "") if isinstance(param_info, dict) else str(param_info)
                     
                     # Create v2-compatible structure
+                    # Extract unit value with clearer logic
+                    if meas.get("unit"):
+                        unit_value = meas.get("unit")
+                    elif isinstance(param_info, dict):
+                        unit_value = param_info.get("units", "")
+                    else:
+                        unit_value = ""
+
                     transformed.append({
                         "location": location,
                         "parameter": param_name,
                         "value": meas.get("value"),
-                        "unit": meas.get("unit") or param_info.get("units", "") if isinstance(param_info, dict) else "",
+                        "unit": unit_value,
                         "date": {
                             "utc": meas.get("date", {}).get("utc") if isinstance(meas.get("date"), dict) else meas.get("date")
                         }
