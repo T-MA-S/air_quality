@@ -22,6 +22,8 @@ services:
     image: apache/airflow:2.8.1
     command: >
       bash -c "
+      mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins &&
+      chmod -R 777 /opt/airflow/logs &&
       python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt &&
       airflow webserver
       "
@@ -58,6 +60,8 @@ services:
     image: apache/airflow:2.8.1
     command: >
       bash -c "
+      mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins &&
+      chmod -R 777 /opt/airflow/logs &&
       python -m pip install -q -r /opt/airflow/project/requirements-airflow.txt &&
       airflow scheduler
       "
