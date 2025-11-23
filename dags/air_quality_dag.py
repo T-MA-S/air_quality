@@ -92,7 +92,7 @@ def create_views(**context):
     """Create views in database."""
     engine = get_engine()
     
-    # Читаем SQL файл
+    # Read SQL file
     with open("/opt/airflow/project/sql/views.sql", "r") as f:
         sql_content = f.read()
     
