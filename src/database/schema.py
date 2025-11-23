@@ -121,5 +121,4 @@ def _insert_default_metrics(engine):
             except Exception as e:
                 # Metric might already exist
                 logger.debug(f"Metric {metric['metric_code']} might already exist: {e}")
-                pass  # begin() handles rollback automatically
 
