@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from src.database.connection import get_engine
 from src.utils.logger import setup_logger
+from src.data.models import CITIES
 
 logger = setup_logger(__name__)
 
@@ -38,15 +39,27 @@ def main():
     # Sidebar filters
     st.sidebar.header("Filters")
 
-    # Load cities
+    # Use only active cities from CITIES (exclude removed cities like Moscow, Beijing, Saint Petersburg)
+    active_city_names = [city.name for city in CITIES]
+    
+    # Verify cities exist in database
     cities_df = load_data("SELECT DISTINCT city_name FROM dim_city ORDER BY city_name")
-    cities = cities_df["city_name"].tolist() if not cities_df.empty else []
+    all_cities_in_db = cities_df["city_name"].tolist() if not cities_df.empty else []
+    
+    # Filter to only show active cities that exist in database
+    cities = [city for city in active_city_names if city in all_cities_in_db]
+    
+    if not cities:
+        st.warning("No active cities found in database. Please run the ETL pipeline first.")
+        return
 
-    selected_cities = st.sidebar.multiselect("Select Cities", cities, default=cities[:3] if cities else [])
+    selected_cities = st.sidebar.multiselect("Select Cities", cities, default=cities[:3] if len(cities) >= 3 else cities)
 
-    # Load metrics
+    # Load metrics (exclude SO2 and CO)
     metrics_df = load_data("SELECT metric_code, metric_name FROM dim_metric ORDER BY metric_code")
-    metrics = metrics_df["metric_code"].tolist() if not metrics_df.empty else ["pm25", "pm10"]
+    all_metrics = metrics_df["metric_code"].tolist() if not metrics_df.empty else ["pm25", "pm10"]
+    # Filter out SO2 and CO
+    metrics = [m for m in all_metrics if m.lower() not in ["so2", "co"]]
 
     # Filter default values to only include those that exist in metrics list
     default_metrics = ["pm25", "pm10"]
@@ -67,6 +80,19 @@ def main():
     if not selected_cities or not selected_metrics:
         st.warning("Please select at least one city and one metric")
         return
+    
+    # Handle date_range - it can be a single date or tuple
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        date_from = date_range[0]
+        date_to = date_range[1]
+    elif isinstance(date_range, pd.Timestamp) or hasattr(date_range, 'date'):
+        # Single date selected
+        date_from = date_range
+        date_to = pd.Timestamp.now()
+    else:
+        # Default to last 7 days
+        date_from = pd.Timestamp.now() - pd.Timedelta(days=7)
+        date_to = pd.Timestamp.now()
 
     # Main content
     tab1, tab2, tab3, tab4 = st.tabs(["Trends", "Correlations", "Risk Map", "Statistics"])
@@ -86,8 +112,8 @@ def main():
         FROM v_air_quality
         WHERE city_name IN ('{city_filter}')
             AND metric_code IN ('{metric_filter}')
-            AND timestamp >= '{date_range[0]}'
-            AND timestamp <= '{date_range[1]}'
+            AND timestamp >= '{date_from}'
+            AND timestamp <= '{date_to}'
         ORDER BY timestamp
         """
 
@@ -117,21 +143,19 @@ def main():
 
         query = f"""
         SELECT
-            aq.value_ug_m3,
-            aq.metric_code,
-            w.temperature_c,
-            w.humidity_percent,
-            w.precipitation_mm,
-            w.wind_speed_ms,
-            w.wind_direction_deg
-        FROM v_air_quality_weather aq
-        JOIN v_weather w
-            ON aq.timestamp = w.timestamp
-            AND aq.city_name = w.city_name
-        WHERE aq.city_name IN ('{city_filter}')
-            AND aq.metric_code IN ('{metric_filter}')
-            AND aq.timestamp >= '{date_range[0]}'
-            AND aq.timestamp <= '{date_range[1]}'
+            value_ug_m3,
+            metric_code,
+            temperature_c,
+            humidity_percent,
+            precipitation_mm,
+            wind_speed_ms,
+            wind_direction_deg
+        FROM v_air_quality_weather
+        WHERE city_name IN ('{city_filter}')
+            AND metric_code IN ('{metric_filter}')
+            AND timestamp >= '{date_from}'
+            AND timestamp <= '{date_to}'
+        LIMIT 10000
         """
 
         df = load_data(query)
@@ -181,10 +205,11 @@ def main():
         FROM v_risk_map
         WHERE city_name IN ('{city_filter}')
             AND metric_code IN ('{metric_filter}')
-            AND date >= '{date_range[0]}'
-            AND date <= '{date_range[1]}'
+            AND date >= '{date_from}'
+            AND date <= '{date_to}'
         GROUP BY date, hour, city_name, metric_code, risk_level
         ORDER BY date, hour
+        LIMIT 5000
         """
 
         df = load_data(query)
@@ -200,16 +225,23 @@ def main():
                         fill_value=0,
                     ).reset_index()
 
-                    fig = px.scatter(
-                        pivot_df,
-                        x="date",
-                        y="hour",
-                        size="HIGH",
-                        color="MODERATE",
-                        title=f"{metric.upper()} Risk Map",
-                        labels={"date": "Date", "hour": "Hour of Day"},
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Check which risk level columns exist
+                    size_col = "HIGH" if "HIGH" in pivot_df.columns else None
+                    color_col = "MODERATE" if "MODERATE" in pivot_df.columns else "LOW" if "LOW" in pivot_df.columns else None
+                    
+                    if size_col or color_col:
+                        fig = px.scatter(
+                            pivot_df,
+                            x="date",
+                            y="hour",
+                            size=size_col if size_col else None,
+                            color=color_col if color_col else None,
+                            title=f"{metric.upper()} Risk Map",
+                            labels={"date": "Date", "hour": "Hour of Day"},
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info(f"No risk data available for {metric}")
         else:
             st.info("No risk data available")
 
@@ -218,22 +250,28 @@ def main():
 
         city_filter = "', '".join(selected_cities)
 
+        # Используем более быстрый запрос напрямую к fact таблицам вместо медленного v_daily_aggregates
         query = f"""
         SELECT
-            city_name,
-            metric_code,
-            AVG(avg_value) as avg_value,
-            MIN(min_value) as min_value,
-            MAX(max_value) as max_value,
-            AVG(data_points) as avg_data_points,
-            AVG(avg_temperature) as avg_temperature,
-            AVG(avg_wind_speed) as avg_wind_speed
-        FROM v_daily_aggregates
-        WHERE city_name IN ('{city_filter}')
-            AND date >= '{date_range[0]}'
-            AND date <= '{date_range[1]}'
-        GROUP BY city_name, metric_code
-        ORDER BY city_name, metric_code
+            dc.city_name,
+            dm.metric_code,
+            AVG(faq.value_ug_m3) as avg_value,
+            MIN(faq.value_ug_m3) as min_value,
+            MAX(faq.value_ug_m3) as max_value,
+            COUNT(*) as total_records,
+            AVG(fw.temperature_c) as avg_temperature,
+            AVG(fw.wind_speed_ms) as avg_wind_speed
+        FROM fact_air_quality faq
+        JOIN dim_city dc ON faq.city_id = dc.city_id
+        JOIN dim_metric dm ON faq.metric_id = dm.metric_id
+        LEFT JOIN fact_weather fw ON faq.city_id = fw.city_id 
+            AND DATE(faq.timestamp) = DATE(fw.timestamp)
+        WHERE dc.city_name IN ('{city_filter}')
+            AND dm.metric_code IN ('{metric_filter}')
+            AND faq.timestamp >= '{date_from}'
+            AND faq.timestamp <= '{date_to}'
+        GROUP BY dc.city_name, dm.metric_code
+        ORDER BY dc.city_name, dm.metric_code
         """
 
         df = load_data(query)
@@ -252,8 +290,8 @@ def main():
                 1.0 - COUNT(value_ug_m3)::float / NULLIF(COUNT(*), 0) as missing_ratio
             FROM v_air_quality
             WHERE city_name IN ('{city_filter}')
-                AND timestamp >= '{date_range[0]}'
-                AND timestamp <= '{date_range[1]}'
+                AND timestamp >= '{date_from}'
+                AND timestamp <= '{date_to}'
             GROUP BY city_name, metric_code
             """
             completeness_df = load_data(completeness_query)

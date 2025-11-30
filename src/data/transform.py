@@ -97,7 +97,11 @@ def transform_openaq_measurements(
                 date_utc = m.get("dateUTC")
             
             if date_utc:
-                timestamp = normalize_timestamp(date_utc, city.timezone)
+                try:
+                    timestamp = normalize_timestamp(date_utc, city.timezone)
+                except Exception:
+                    # Handle ambiguous time during DST transitions
+                    continue
             else:
                 continue
 
@@ -150,10 +154,61 @@ def transform_openaq_measurements(
 
     df = pd.DataFrame(records)
 
-    # Aggregate by city and hour (if multiple stations)
-    df["timestamp_hour"] = df["timestamp"].dt.floor("H")
+    if df.empty:
+        return pd.DataFrame()
 
-    return df
+    # Aggregate by city and hour (if multiple stations)
+    # Handle DST transitions (ambiguous time)
+    try:
+        df["timestamp_hour"] = df["timestamp"].dt.floor("H")
+    except Exception:
+        # Handle ambiguous time during DST transitions - use NaT and drop
+        df["timestamp_hour"] = df["timestamp"].dt.floor("H", ambiguous="NaT", nonexistent="shift_forward")
+        df = df.dropna(subset=["timestamp_hour"])  # Remove ambiguous times
+
+    # Pivot parameters to columns (pm25, pm10, no2, o3, etc.)
+    # This converts from long format to wide format
+    aq_agg = (
+        df.groupby(["city", "timestamp_hour", "parameter"])
+        .agg(
+            {
+                "value_ug_m3": ["mean", "count"],
+                "latitude": "first",
+                "longitude": "first",
+                "location_id": "first",
+                "location_name": "first",
+            }
+        )
+        .reset_index()
+    )
+    aq_agg.columns = [
+        "city",
+        "timestamp_hour",
+        "parameter",
+        "value_ug_m3_mean",
+        "station_count",
+        "latitude",
+        "longitude",
+        "location_id",
+        "location_name",
+    ]
+
+    # Pivot parameters to columns
+    aq_pivot = aq_agg.pivot_table(
+        index=["city", "timestamp_hour", "latitude", "longitude", "station_count", "location_id", "location_name"],
+        columns="parameter",
+        values="value_ug_m3_mean",
+        aggfunc="mean",
+    ).reset_index()
+
+    # Rename columns to lowercase (pm25, pm10, etc.)
+    aq_pivot.columns = [col.lower() if isinstance(col, str) else col for col in aq_pivot.columns]
+    
+    # Set timestamp from timestamp_hour
+    aq_pivot["timestamp"] = aq_pivot["timestamp_hour"]
+    aq_pivot = aq_pivot.drop(columns=["timestamp_hour"])
+
+    return aq_pivot
 
 
 def transform_open_meteo_weather(
@@ -200,7 +255,13 @@ def transform_open_meteo_weather(
             df[df_column] = hourly[api_param]
 
     # Create hourly floor for aggregation
-    df["timestamp_hour"] = df["timestamp"].dt.floor("H")
+    # Handle DST transitions (ambiguous time)
+    try:
+        df["timestamp_hour"] = df["timestamp"].dt.floor("H")
+    except Exception:
+        # Handle ambiguous time during DST transitions - use NaT and drop
+        df["timestamp_hour"] = df["timestamp"].dt.floor("H", ambiguous="NaT", nonexistent="shift_forward")
+        df = df.dropna(subset=["timestamp_hour"])  # Remove ambiguous times
 
     return df
 
@@ -212,7 +273,7 @@ def merge_air_quality_and_weather(
     Merge air quality and weather data by timestamp and city.
 
     Args:
-        air_quality_df: Air quality DataFrame
+        air_quality_df: Air quality DataFrame (wide format with pm25, pm10, no2, o3 columns)
         weather_df: Weather DataFrame
 
     Returns:
@@ -221,35 +282,31 @@ def merge_air_quality_and_weather(
     if air_quality_df.empty or weather_df.empty:
         return pd.DataFrame()
 
-    # Aggregate air quality by hour and parameter
-    aq_agg = (
-        air_quality_df.groupby(["city", "timestamp_hour", "parameter"])
-        .agg(
-            {
-                "value_ug_m3": ["mean", "count"],
-                "latitude": "first",
-                "longitude": "first",
-            }
-        )
-        .reset_index()
-    )
-    aq_agg.columns = [
-        "city",
-        "timestamp_hour",
-        "parameter",
-        "value_ug_m3_mean",
-        "station_count",
-        "latitude",
-        "longitude",
-    ]
+    # Air quality data is already in wide format (pm25, pm10, no2, o3 columns)
+    # Just need to aggregate by hour if needed
+    if "timestamp_hour" not in air_quality_df.columns:
+        # Create timestamp_hour from timestamp for merging
+        air_quality_df = air_quality_df.copy()
+        air_quality_df["timestamp_hour"] = pd.to_datetime(air_quality_df["timestamp"]).dt.floor("H")
 
-    # Pivot parameters to columns
-    aq_pivot = aq_agg.pivot_table(
-        index=["city", "timestamp_hour", "latitude", "longitude", "station_count"],
-        columns="parameter",
-        values="value_ug_m3_mean",
-        aggfunc="mean",
-    ).reset_index()
+    # Aggregate air quality by hour (if multiple records per hour)
+    aq_agg_cols = ["city", "timestamp_hour"]
+    agg_dict = {}
+    
+    # Add parameter columns if they exist
+    for param in ["pm25", "pm10", "no2", "o3", "co", "so2"]:
+        if param in air_quality_df.columns:
+            agg_dict[param] = "mean"
+    
+    # Add other columns
+    for col in ["latitude", "longitude", "station_count", "location_id", "location_name"]:
+        if col in air_quality_df.columns:
+            agg_dict[col] = "first"
+    
+    if agg_dict:
+        aq_agg = air_quality_df.groupby(aq_agg_cols).agg(agg_dict).reset_index()
+    else:
+        aq_agg = air_quality_df.copy()
 
     # Merge with weather
     weather_agg = (
@@ -267,12 +324,13 @@ def merge_air_quality_and_weather(
     )
 
     merged = pd.merge(
-        aq_pivot,
+        aq_agg,
         weather_agg,
         on=["city", "timestamp_hour"],
         how="outer",
     )
 
+    # Set timestamp from timestamp_hour
     merged["timestamp"] = merged["timestamp_hour"]
     merged = merged.drop(columns=["timestamp_hour"])
 

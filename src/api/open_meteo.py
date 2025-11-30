@@ -28,10 +28,12 @@ class OpenMeteoClient:
         self.rate_limiter = RateLimiter(max_requests=rate_limit, time_window=60)
         self.retry_handler = RetryHandler(max_retries=3)
 
+        # Use more granular timeout settings
+        timeout = httpx.Timeout(10.0, connect=10.0, read=60.0)
         self.client = httpx.Client(
             base_url=self.base_url,
             headers={"Accept": "application/json"},
-            timeout=30.0,
+            timeout=timeout,
         )
 
     def _make_request(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:

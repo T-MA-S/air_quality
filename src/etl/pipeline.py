@@ -63,29 +63,175 @@ class ETLPipeline:
             f"Extracting air quality data for {city.name} from {date_from} to {date_to}"
         )
 
-        all_measurements = []
-        for param in parameters:
+        # Get exactly 5 locations from 25km radius
+        all_locations = []
+        try:
+            locations = self.openaq_client.get_locations(
+                latitude=city.latitude,
+                longitude=city.longitude,
+                radius=25000,  # 25km
+                limit=5  # Take only 5 locations
+            )
+            all_locations = locations[:5]  # Ensure we have max 5
+            if all_locations:
+                logger.info(f"Found {len(all_locations)} locations near {city.name} (radius: 25km, limit: 5)")
+            else:
+                logger.warning(f"No locations found for {city.name}")
+                return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Error getting locations for {city.name}: {e}")
+            return pd.DataFrame()
+
+        # Analyze parameters in these 5 locations
+        location_param_map = {}  # {location_id: set of parameters}
+        for loc in all_locations:
+            loc_id = loc.get("id")
+            if not loc_id:
+                continue
+            sensors = loc.get("sensors", [])
+            loc_params = set()
+            for sensor in sensors:
+                param_info = sensor.get("parameter", {})
+                if isinstance(param_info, dict):
+                    param_name = param_info.get("name", "").lower()
+                    if param_name in parameters:
+                        loc_params.add(param_name)
+            if loc_params:
+                location_param_map[loc_id] = loc_params
+                logger.debug(f"Location {loc_id} has parameters: {sorted(loc_params)}")
+
+        # Check if we have all parameters in these 5 locations
+        all_found_params = set()
+        for loc_params in location_param_map.values():
+            all_found_params |= loc_params
+        
+        missing_params = set(parameters) - all_found_params
+        
+        if missing_params:
+            logger.warning(f"Missing parameters in 5 locations for {city.name}: {sorted(missing_params)}")
+            # Try to find missing parameters in additional locations
+            logger.info(f"Searching for missing parameters in additional locations...")
             try:
-                # Use coordinates instead of city name for v3 API
-                measurements = self.openaq_client.get_measurements(
+                additional_locations = self.openaq_client.get_locations(
                     latitude=city.latitude,
                     longitude=city.longitude,
-                    parameter=param,
+                    radius=25000,
+                    limit=20  # Get more to find missing params
+                )
+                # Skip already checked locations
+                checked_ids = set(location_param_map.keys())
+                for loc in additional_locations:
+                    loc_id = loc.get("id")
+                    if loc_id in checked_ids:
+                        continue
+                    sensors = loc.get("sensors", [])
+                    loc_params = set()
+                    for sensor in sensors:
+                        param_info = sensor.get("parameter", {})
+                        if isinstance(param_info, dict):
+                            param_name = param_info.get("name", "").lower()
+                            if param_name in missing_params:
+                                loc_params.add(param_name)
+                    if loc_params:
+                        location_param_map[loc_id] = loc_params
+                        missing_params -= loc_params
+                        logger.info(f"Found missing parameter(s) {sorted(loc_params)} in location {loc_id}")
+                        if not missing_params:
+                            break
+            except Exception as e:
+                logger.debug(f"Error searching for missing parameters: {e}")
+
+        # Select locations to cover all required parameters
+        selected_location_ids = []
+        found_params = set()
+        
+        # First, try to find a location with all parameters
+        for loc_id, loc_params in location_param_map.items():
+            if loc_params >= set(parameters):
+                selected_location_ids = [loc_id]
+                found_params = loc_params
+                logger.info(f"Found location {loc_id} with all parameters for {city.name}")
+                break
+        
+        # If no single location has all parameters, select multiple locations
+        if not selected_location_ids:
+            remaining_params = set(parameters)
+            # Sort by number of needed parameters (prefer locations with more missing params)
+            sorted_locations = sorted(
+                location_param_map.items(),
+                key=lambda x: len(x[1] & remaining_params),
+                reverse=True
+            )
+            
+            for loc_id, loc_params in sorted_locations:
+                if remaining_params & loc_params:  # If location has any missing params
+                    selected_location_ids.append(loc_id)
+                    found_params |= (loc_params & remaining_params)
+                    new_params = loc_params & remaining_params
+                    remaining_params -= loc_params
+                    logger.info(f"Selected location {loc_id} for {city.name} (adds: {sorted(new_params)})")
+                    if not remaining_params:
+                        break
+            
+            if remaining_params:
+                logger.warning(f"Could not find locations with parameters {sorted(remaining_params)} for {city.name}")
+            else:
+                logger.info(f"Selected {len(selected_location_ids)} locations to cover all parameters for {city.name}")
+
+        if not selected_location_ids:
+            logger.warning(f"No locations found with required parameters for {city.name}")
+            return pd.DataFrame()
+
+        # Get measurements from selected locations
+        all_measurements = []
+        for loc_id in selected_location_ids:
+            try:
+                # Get all latest measurements from this location
+                measurements = self.openaq_client.get_measurements(
+                    location_id=loc_id,
+                    latitude=None,
+                    longitude=None,
+                    parameter=None,  # Get all parameters from this location
                     date_from=date_from,
                     date_to=date_to,
                 )
-                all_measurements.extend(measurements)
+                
+                # Filter by requested parameters
+                for meas in measurements:
+                    param_name = meas.get("parameter", "").lower()
+                    if param_name in parameters:
+                        all_measurements.append(meas)
+                
                 logger.info(
-                    f"Extracted {len(measurements)} measurements for {param} in {city.name}"
+                    f"Extracted {len(measurements)} measurements from location {loc_id} for {city.name}"
                 )
+                    
             except Exception as e:
-                logger.error(f"Error extracting {param} for {city.name}: {e}")
+                logger.debug(f"Error getting data from location {loc_id} for {city.name}: {e}")
+                continue
+        
+        # Log what parameters we found
+        found_params = {meas.get("parameter", "").lower() for meas in all_measurements if meas.get("parameter", "").lower() in parameters}
+        missing_params = set(parameters) - found_params
+        if missing_params:
+            logger.warning(f"Missing parameters for {city.name}: {missing_params}")
+        if found_params:
+            logger.info(f"Found parameters for {city.name}: {found_params}")
 
         if not all_measurements:
             logger.warning(f"No air quality data found for {city.name}")
             return pd.DataFrame()
 
+        # Transform measurements
         df = transform_openaq_measurements(all_measurements, city)
+        
+        # Update timestamps to current hour (since /latest returns data with old timestamps)
+        # This ensures we have data marked with current collection time
+        if not df.empty:
+            # Round to current hour
+            current_hour = pd.Timestamp.now(tz=df["timestamp"].iloc[0].tz).floor("H")
+            df["timestamp"] = current_hour
+        
         return df
 
     def extract_weather(
@@ -200,20 +346,31 @@ class ETLPipeline:
                     merged_df = pd.DataFrame()
 
                 # Load
+                aq_records = 0
+                weather_records = 0
+                
                 if not aq_df.empty:
+                    logger.info(f"Loading {len(aq_df)} air quality records for {city.name} into database")
                     aq_records = self.data_loader.load_air_quality(
                         aq_df, city_id_map
                     )
                     results["total_aq_records"] += aq_records
+                    logger.info(f"Successfully loaded {aq_records} air quality records for {city.name}")
+                else:
+                    logger.warning(f"No air quality data to load for {city.name}")
 
                 if not weather_df.empty:
+                    logger.info(f"Loading {len(weather_df)} weather records for {city.name} into database")
                     weather_records = self.data_loader.load_weather(
                         weather_df, city_id_map
                     )
                     results["total_weather_records"] += weather_records
+                    logger.info(f"Successfully loaded {weather_records} weather records for {city.name}")
+                else:
+                    logger.warning(f"No weather data to load for {city.name}")
 
                 results["cities_processed"] += 1
-                logger.info(f"Successfully processed {city.name}")
+                logger.info(f"Successfully processed {city.name}: {aq_records} AQ records, {weather_records} weather records")
 
             except Exception as e:
                 logger.error(f"Error processing {city.name}: {e}", exc_info=True)

@@ -26,22 +26,6 @@ class City:
 # Predefined cities with coordinates
 CITIES = [
     City(
-        name="Moscow",
-        country="RU",
-        latitude=55.7558,
-        longitude=37.6173,
-        timezone="Europe/Moscow",
-        openaq_city_name="Moscow",
-    ),
-    City(
-        name="Saint Petersburg",
-        country="RU",
-        latitude=59.9343,
-        longitude=30.3351,
-        timezone="Europe/Moscow",
-        openaq_city_name="Saint Petersburg",
-    ),
-    City(
         name="London",
         country="GB",
         latitude=51.5074,
@@ -80,14 +64,6 @@ CITIES = [
         longitude=139.6503,
         timezone="Asia/Tokyo",
         openaq_city_name="Tokyo",
-    ),
-    City(
-        name="Beijing",
-        country="CN",
-        latitude=39.9042,
-        longitude=116.4074,
-        timezone="Asia/Shanghai",
-        openaq_city_name="Beijing",
     ),
 ]
 

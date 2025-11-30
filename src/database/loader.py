@@ -109,7 +109,7 @@ class DataLoader:
                     if metric_id:
                         metric_id_map[metric_code] = metric_id
 
-            # Prepare records
+            # Prepare records and check for duplicates
             records = []
             for _, row in df.iterrows():
                 city_id = city_id_map.get(row["city"])
@@ -121,19 +121,30 @@ class DataLoader:
                 # Insert one record per metric
                 for metric_code, metric_id in metric_id_map.items():
                     if metric_code in row and pd.notna(row[metric_code]):
-                        record = {
-                            "timestamp": timestamp,
-                            "city_id": city_id,
-                            "metric_id": metric_id,
-                            "value": float(row[metric_code]),
-                            "value_ug_m3": float(row[metric_code]),
-                            "station_count": int(row.get("station_count", 1)),
-                            "latitude": float(row.get("latitude", 0)),
-                            "longitude": float(row.get("longitude", 0)),
-                            "location_id": str(row.get("location_id", ""))[:50],
-                            "location_name": str(row.get("location_name", ""))[:200],
-                        }
-                        records.append(record)
+                        # Check if record already exists (avoid duplicates)
+                        check_stmt = select(fact_air_quality).where(
+                            and_(
+                                fact_air_quality.c.timestamp == timestamp,
+                                fact_air_quality.c.city_id == city_id,
+                                fact_air_quality.c.metric_id == metric_id,
+                            )
+                        )
+                        existing = session.execute(check_stmt).first()
+                        
+                        if not existing:
+                            record = {
+                                "timestamp": timestamp,
+                                "city_id": city_id,
+                                "metric_id": metric_id,
+                                "value": float(row[metric_code]),
+                                "value_ug_m3": float(row[metric_code]),
+                                "station_count": int(row.get("station_count", 1)),
+                                "latitude": float(row.get("latitude", 0)),
+                                "longitude": float(row.get("longitude", 0)),
+                                "location_id": str(row.get("location_id", ""))[:50],
+                                "location_name": str(row.get("location_name", ""))[:200],
+                            }
+                            records.append(record)
 
             # Bulk insert
             if records:
@@ -141,7 +152,9 @@ class DataLoader:
                 session.execute(stmt, records)
                 session.commit()
                 records_inserted = len(records)
-                logger.info(f"Inserted {records_inserted} air quality records")
+                logger.info(f"Inserted {records_inserted} new air quality records (skipped duplicates)")
+            else:
+                logger.info("No new records to insert (all duplicates)")
 
         except Exception as e:
             session.rollback()

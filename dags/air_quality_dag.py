@@ -41,12 +41,14 @@ dag = DAG(
 
 
 def run_etl(**context):
-    """Run ETL pipeline for last 7 days."""
+    """Run ETL pipeline for current hour (latest available data)."""
     execution_date = context.get("execution_date", datetime.now())
+    # Get data for current hour (OpenAQ /latest returns most recent data)
+    # We'll use current timestamp to mark when data was collected
     date_to = execution_date
-    date_from = date_to - timedelta(days=7)
+    date_from = date_to - timedelta(hours=1)  # Last hour window
 
-    logger.info(f"Running ETL from {date_from} to {date_to}")
+    logger.info(f"Running ETL for current hour: {date_to}")
 
     pipeline = ETLPipeline(cities=CITIES)
     results = pipeline.run(date_from=date_from, date_to=date_to)

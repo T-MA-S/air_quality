@@ -44,10 +44,14 @@ class OpenAQClient:
             # OpenAQ v3 requires API key - warn if not provided
             logger.warning("OpenAQ API key not provided. v3 API requires authentication.")
 
+        # Use more granular timeout settings
+        # connect timeout: time to establish connection
+        # read timeout: time to read response (OpenAQ can be very slow with large responses)
+        timeout = httpx.Timeout(10.0, connect=10.0, read=180.0)
         self.client = httpx.Client(
             base_url=self.base_url,
             headers=headers,
-            timeout=30.0,
+            timeout=timeout,
         )
 
     def _make_request(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -65,9 +69,20 @@ class OpenAQClient:
             return cached_response
 
         def _request():
-            response = self.client.get(endpoint, params=params or {})
-            response.raise_for_status()
-            return response.json()
+            try:
+                logger.debug(f"Making request to {endpoint} with params: {params}")
+                response = self.client.get(endpoint, params=params or {})
+                response.raise_for_status()
+                return response.json()
+            except httpx.TimeoutException as e:
+                logger.error(f"Timeout error for {endpoint}: {e}")
+                raise
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error for {endpoint}: {e.response.status_code} - {e.response.text[:200]}")
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error for {endpoint}: {e}")
+                raise
 
         result = self.retry_handler.execute(_request)
 
@@ -82,7 +97,7 @@ class OpenAQClient:
         country: Optional[str] = None,
         latitude: Optional[float] = None,
         longitude: Optional[float] = None,
-        radius: int = 25000,  # radius in meters (25km default, max allowed in v3)
+        radius: int = 5000,  # radius in meters (5km default, sufficient for city center)
         limit: int = 1000,
     ) -> List[Dict[str, Any]]:
         """
@@ -93,7 +108,7 @@ class OpenAQClient:
             country: Country code filter (ISO 3166-1 alpha-2)
             latitude: Latitude for coordinate-based search
             longitude: Longitude for coordinate-based search
-            radius: Search radius in meters (default 25km, max 25km in v3)
+            radius: Search radius in meters (default 5km, max 25km in v3)
             limit: Maximum number of results
 
         Returns:
@@ -160,8 +175,8 @@ class OpenAQClient:
         if location_id:
             location_ids = [location_id]
         elif latitude is not None and longitude is not None:
-            # Find locations near coordinates
-            locations = self.get_locations(latitude=latitude, longitude=longitude, limit=50)
+            # Find locations near coordinates (use smaller radius and limit for faster response)
+            locations = self.get_locations(latitude=latitude, longitude=longitude, radius=5000, limit=10)
             location_ids = [loc.get("id") for loc in locations if loc.get("id")]
             logger.info(f"Found {len(location_ids)} locations near coordinates ({latitude}, {longitude})")
         elif city:
@@ -175,10 +190,14 @@ class OpenAQClient:
             return []
         
         # For each location, get latest measurements
-        # v3 API: use /locations/{id}/latest endpoint
-        for loc_id in location_ids[:20]:  # Limit to avoid too many requests
+        # NOTE: OpenAQ v3 /latest endpoint returns only the most recent measurements
+        # It does NOT support historical date ranges. For historical data,
+        # we would need to use a different approach (e.g., collect data regularly over time)
+        # For now, we get latest available data which may be recent or old depending on station activity
+        for loc_id in location_ids:
             try:
                 # Get latest measurements for this location
+                # This returns the most recent available data (may be hours or days old)
                 endpoint = f"/locations/{loc_id}/latest"
                 response = self._make_request(endpoint, params={})
                 
@@ -208,8 +227,12 @@ class OpenAQClient:
                     param_info = sensor_param_map.get(sensor_id, {})
                     param_name = param_info.get("name", "")
                     
-                    # Filter by parameter if specified
-                    if parameter and param_name != parameter.lower():
+                    # Filter by parameter if specified (if None, get all parameters)
+                    if parameter is not None and param_name != parameter.lower():
+                        continue
+                    
+                    # Skip if parameter name is empty
+                    if not param_name:
                         continue
                     
                     # Extract datetime

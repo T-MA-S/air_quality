@@ -100,14 +100,19 @@ class RetryHandler:
                 return func(*args, **kwargs)
             except Exception as e:
                 last_exception = e
+                error_type = type(e).__name__
+                error_msg = str(e)
+                
                 if attempt < self.max_retries:
                     logger.warning(
-                        f"Attempt {attempt + 1} failed: {e}. Retrying in {delay:.2f}s"
+                        f"Attempt {attempt + 1}/{self.max_retries + 1} failed ({error_type}): {error_msg}. Retrying in {delay:.2f}s"
                     )
                     time.sleep(delay)
                     delay *= self.backoff_factor
                 else:
-                    logger.error(f"All {self.max_retries + 1} attempts failed")
+                    logger.error(
+                        f"All {self.max_retries + 1} attempts failed. Last error ({error_type}): {error_msg}"
+                    )
 
         raise last_exception
 
