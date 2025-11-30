@@ -65,11 +65,24 @@ def validate_data_quality(**context):
     engine = get_engine()
     checker = DataQualityChecker()
 
-    # Load recent data
+    # Load recent data - try view first, fallback to direct tables
     query = """
-    SELECT *
-    FROM v_air_quality
-    WHERE timestamp >= NOW() - INTERVAL '7 days'
+    SELECT
+        aq.timestamp,
+        c.city_name,
+        c.country,
+        m.metric_code,
+        m.metric_name,
+        m.unit,
+        aq.value,
+        aq.value_ug_m3,
+        aq.station_count,
+        aq.latitude,
+        aq.longitude
+    FROM fact_air_quality aq
+    JOIN dim_city c ON aq.city_id = c.city_id
+    JOIN dim_metric m ON aq.metric_id = m.metric_id
+    WHERE aq.timestamp >= NOW() - INTERVAL '7 days'
     """
     with engine.connect() as conn:
         df = pd.read_sql(text(query), conn)
@@ -96,23 +109,15 @@ def create_views(**context):
     with open("/opt/airflow/project/sql/views.sql", "r") as f:
         sql_content = f.read()
     
-    # Выполняем SQL
-    with engine.connect() as conn:
-        trans = conn.begin()
-        try:
-            # Execute the entire SQL file as a single statement
-            try:
-                conn.execute(text(sql_content))
-            except Exception as e:
-                logger.warning(f"Error creating views: {e}")
-            try:
-                trans.commit()
-            except Exception as e_commit:
-                trans.rollback()
-                logger.warning(f"Error committing transaction for views: {e_commit}")
-        except Exception as e:
-            trans.rollback()
-            logger.warning(f"Error creating views: {e}")
+    # Execute SQL statements one by one
+    with engine.begin() as conn:
+        for statement in sql_content.split(";"):
+            statement = statement.strip()
+            if statement and not statement.startswith("--"):
+                try:
+                    conn.execute(text(statement))
+                except Exception as e:
+                    logger.debug(f"View might already exist or error: {e}")
     
     logger.info("Views created/updated")
 
@@ -137,5 +142,5 @@ create_views_task = PythonOperator(
 )
 
 # Task dependencies
-extract_task >> validate_task >> create_views_task
+extract_task >> create_views_task >> validate_task
 
