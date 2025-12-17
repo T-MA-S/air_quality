@@ -5,8 +5,9 @@ import pandas as pd
 from sqlalchemy import insert, select, and_
 
 from src.database.connection import get_session, get_engine
-from src.database.schema import dim_city, dim_metric, fact_air_quality, fact_weather
+from src.database.schema import dim_city, dim_metric, fact_air_quality, fact_weather, fact_data_quality_metrics
 from src.utils.logger import setup_logger
+from datetime import datetime, date
 
 logger = setup_logger(__name__)
 
@@ -211,6 +212,82 @@ class DataLoader:
         except Exception as e:
             session.rollback()
             logger.error(f"Error loading weather data: {e}")
+            raise
+        finally:
+            session.close()
+
+        return records_inserted
+
+    def load_quality_metrics(
+        self,
+        quality_metrics: List[dict],
+    ) -> int:
+        """
+        Load data quality metrics into fact_data_quality_metrics table.
+
+        Args:
+            quality_metrics: List of dictionaries with quality metrics:
+                - date: date object
+                - city_id: int
+                - metric_id: int
+                - completeness_ratio: float (0.0 to 1.0)
+                - missing_ratio: float (0.0 to 1.0)
+                - data_points_expected: int
+                - data_points_actual: int
+                - value_range_violations: int (optional, default 0)
+                - sudden_jumps_count: int (optional, default 0)
+                - is_monotonic: bool (optional, default True)
+
+        Returns:
+            Number of records inserted
+        """
+        if not quality_metrics:
+            return 0
+
+        session = get_session()
+        records_inserted = 0
+
+        try:
+            records = []
+            for metric in quality_metrics:
+                # Check if record already exists
+                check_stmt = select(fact_data_quality_metrics).where(
+                    and_(
+                        fact_data_quality_metrics.c.date == metric["date"],
+                        fact_data_quality_metrics.c.city_id == metric["city_id"],
+                        fact_data_quality_metrics.c.metric_id == metric["metric_id"],
+                    )
+                )
+                existing = session.execute(check_stmt).first()
+
+                if not existing:
+                    record = {
+                        "date": metric["date"],
+                        "city_id": metric["city_id"],
+                        "metric_id": metric["metric_id"],
+                        "completeness_ratio": float(metric["completeness_ratio"]),
+                        "missing_ratio": float(metric["missing_ratio"]),
+                        "data_points_expected": int(metric["data_points_expected"]),
+                        "data_points_actual": int(metric["data_points_actual"]),
+                        "value_range_violations": int(metric.get("value_range_violations", 0)),
+                        "sudden_jumps_count": int(metric.get("sudden_jumps_count", 0)),
+                        "is_monotonic": bool(metric.get("is_monotonic", True)),
+                    }
+                    records.append(record)
+
+            # Bulk insert
+            if records:
+                stmt = insert(fact_data_quality_metrics)
+                session.execute(stmt, records)
+                session.commit()
+                records_inserted = len(records)
+                logger.info(f"Inserted {records_inserted} quality metrics records")
+            else:
+                logger.info("No new quality metrics to insert (all duplicates)")
+
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Error loading quality metrics: {e}")
             raise
         finally:
             session.close()

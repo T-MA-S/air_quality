@@ -46,6 +46,14 @@ cache/
 *.db
 *.sqlite
 
+# ML models (generated files)
+models/
+*.pkl
+*.joblib
+
+# Test data generation scripts
+fill_historical_data.py
+
 # Testing
 .pytest_cache/
 .coverage

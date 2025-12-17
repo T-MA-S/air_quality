@@ -11,6 +11,7 @@ from sqlalchemy import (
     MetaData,
     Table,
     create_engine,
+    Boolean,
 )
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
@@ -89,15 +90,39 @@ fact_weather = Table(
     Index("idx_fact_weather_city_timestamp", "city_id", "timestamp"),
 )
 
+# Data quality metrics table
+fact_data_quality_metrics = Table(
+    "fact_data_quality_metrics",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("date", DateTime, nullable=False),
+    Column("city_id", Integer, nullable=False),
+    Column("metric_id", Integer, nullable=False),
+    Column("completeness_ratio", Float, nullable=False),  # 0.0 to 1.0
+    Column("missing_ratio", Float, nullable=False),  # 0.0 to 1.0
+    Column("data_points_expected", Integer, nullable=False),
+    Column("data_points_actual", Integer, nullable=False),
+    Column("value_range_violations", Integer, default=0),
+    Column("sudden_jumps_count", Integer, default=0),
+    Column("is_monotonic", Boolean, default=True),
+    Column("created_at", TIMESTAMP(timezone=True), server_default="now()"),
+    Index("idx_fact_dq_date", "date"),
+    Index("idx_fact_dq_city_metric", "city_id", "metric_id"),
+    Index("idx_fact_dq_city_date", "city_id", "date"),
+)
+
 
 def create_schema():
-    """Create all tables in the database."""
+    """Create all tables and views in the database."""
     engine = get_engine()
     metadata.create_all(engine)
     logger.info("Database schema created")
 
     # Insert default metrics
     _insert_default_metrics(engine)
+    
+    # Create views
+    _create_views(engine)
 
 
 def _insert_default_metrics(engine):
@@ -121,4 +146,35 @@ def _insert_default_metrics(engine):
             except Exception as e:
                 # Metric might already exist
                 logger.debug(f"Metric {metric['metric_code']} might already exist: {e}")
+
+
+def _create_views(engine):
+    """Create SQL views from views.sql file."""
+    from pathlib import Path
+    from sqlalchemy import text
+    
+    # Find views.sql file
+    project_root = Path(__file__).parent.parent.parent
+    views_file = project_root / "sql" / "views.sql"
+    
+    if not views_file.exists():
+        logger.warning(f"Views file not found: {views_file}")
+        return
+    
+    # Read SQL file
+    with open(views_file, "r", encoding="utf-8") as f:
+        sql_content = f.read()
+    
+    # Execute SQL statements one by one
+    with engine.begin() as conn:
+        for statement in sql_content.split(";"):
+            statement = statement.strip()
+            if statement and not statement.startswith("--"):
+                try:
+                    conn.execute(text(statement))
+                except Exception as e:
+                    # View might already exist or there might be a syntax error
+                    logger.debug(f"View creation: {e}")
+    
+    logger.info("Database views created/updated")
 

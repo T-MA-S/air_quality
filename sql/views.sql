@@ -121,3 +121,70 @@ LEFT JOIN fact_weather w
     ON aq.city_id = w.city_id
     AND aq.timestamp = w.timestamp;
 
+-- View: Air quality with lags (1h, 2h, 3h)
+CREATE OR REPLACE VIEW v_air_quality_lags AS
+SELECT
+    aq.timestamp,
+    c.city_name,
+    m.metric_code,
+    aq.value_ug_m3,
+    LAG(aq.value_ug_m3, 1) OVER (
+        PARTITION BY c.city_name, m.metric_code
+        ORDER BY aq.timestamp
+    ) AS value_lag_1h,
+    LAG(aq.value_ug_m3, 2) OVER (
+        PARTITION BY c.city_name, m.metric_code
+        ORDER BY aq.timestamp
+    ) AS value_lag_2h,
+    LAG(aq.value_ug_m3, 3) OVER (
+        PARTITION BY c.city_name, m.metric_code
+        ORDER BY aq.timestamp
+    ) AS value_lag_3h,
+    aq.station_count
+FROM fact_air_quality aq
+JOIN dim_city c ON aq.city_id = c.city_id
+JOIN dim_metric m ON aq.metric_id = m.metric_id;
+
+-- View: Days with exceedances (summary)
+CREATE OR REPLACE VIEW v_days_with_exceedances AS
+SELECT
+    DATE(aq.timestamp) AS date,
+    c.city_name,
+    m.metric_code,
+    COUNT(*) FILTER (WHERE 
+        (m.metric_code = 'pm25' AND aq.value_ug_m3 > 25) OR
+        (m.metric_code = 'pm10' AND aq.value_ug_m3 > 50) OR
+        (m.metric_code = 'no2' AND aq.value_ug_m3 > 200) OR
+        (m.metric_code = 'o3' AND aq.value_ug_m3 > 180)
+    ) AS exceedance_hours,
+    MAX(aq.value_ug_m3) AS max_value,
+    AVG(aq.value_ug_m3) AS avg_value,
+    CASE 
+        WHEN COUNT(*) FILTER (WHERE 
+            (m.metric_code = 'pm25' AND aq.value_ug_m3 > 25) OR
+            (m.metric_code = 'pm10' AND aq.value_ug_m3 > 50) OR
+            (m.metric_code = 'no2' AND aq.value_ug_m3 > 200) OR
+            (m.metric_code = 'o3' AND aq.value_ug_m3 > 180)
+        ) > 0 THEN TRUE
+        ELSE FALSE
+    END AS has_exceedance
+FROM fact_air_quality aq
+JOIN dim_city c ON aq.city_id = c.city_id
+JOIN dim_metric m ON aq.metric_id = m.metric_id
+GROUP BY DATE(aq.timestamp), c.city_name, m.metric_code;
+
+-- View: Data completeness by city and metric
+CREATE OR REPLACE VIEW v_data_completeness AS
+SELECT
+    c.city_name,
+    m.metric_code,
+    DATE(aq.timestamp) AS date,
+    COUNT(*) AS actual_data_points,
+    24 AS expected_data_points_per_day,
+    ROUND(COUNT(*)::numeric / 24.0 * 100, 2) AS completeness_percent,
+    100.0 - ROUND(COUNT(*)::numeric / 24.0 * 100, 2) AS missing_percent
+FROM fact_air_quality aq
+JOIN dim_city c ON aq.city_id = c.city_id
+JOIN dim_metric m ON aq.metric_id = m.metric_id
+GROUP BY DATE(aq.timestamp), c.city_name, m.metric_code;
+
